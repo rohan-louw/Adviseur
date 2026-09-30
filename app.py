@@ -9,17 +9,55 @@ from database import (
     get_clients,
     get_messages_for_client,
     update_client,
+    update_message_client,
+    get_client_aliases,
+    add_client_alias,
+    delete_client_alias,
 )
+from gmail_client import get_gmail_service, sync_adviseur_emails
 
 
 st.set_page_config(
-    page_title="AI Practice Assistant",
+    page_title="Adviseur",
     page_icon="🤖",
     layout="wide"
 )
 
-st.title("AI Practice Assistant")
-st.caption("Client communication triage for a financial advisory practice")
+st.title("Adviseur")
+st.caption("AI-assisted client communication triage and workflow management for financial advisers.")
+
+st.divider()
+
+st.subheader("Gmail Sync")
+
+if st.button("📨 Sync ADVISEUR Emails"):
+    try:
+        with st.spinner("Checking Gmail..."):
+            service = get_gmail_service()
+
+            sync_results = sync_adviseur_emails(
+                service,
+                limit=20
+            )
+
+        processed = sum(
+            1 for item in sync_results
+            if item["status"] == "PROCESSED"
+        )
+
+        skipped = sum(
+            1 for item in sync_results
+            if item["status"] == "SKIPPED"
+        )
+
+        st.success(
+            f"Gmail sync complete — "
+            f"{processed} processed, "
+            f"{skipped} already processed."
+        )
+
+    except Exception as error:
+        st.error(f"Gmail sync failed: {error}")
 
 st.divider()
 
@@ -181,6 +219,66 @@ if clients:
         st.success("Client updated successfully.")
         st.rerun()
 
+        st.subheader("Email addresses")
+
+    primary_email = selected_profile["email"] or "—"
+    st.write(f"**Primary:** {primary_email}")
+
+    aliases = get_client_aliases(selected_profile["id"])
+
+    if aliases:
+        st.write("**Alternate emails:**")
+
+        for alias in aliases:
+            col1, col2 = st.columns([6, 1])
+
+            with col1:
+                st.write(f"- {alias['email']}")
+
+            with col2:
+                if st.button(
+                    "Delete",
+                    key=f"delete_alias_{alias['id']}"
+                ):
+                    success = delete_client_alias(alias["id"])
+
+                    if success:
+                        st.success("Alias deleted.")
+                        st.rerun()
+                    else:
+                        st.error("Could not delete alias.")
+
+    else:
+        st.caption("No alternate email addresses yet.")
+
+    with st.form(
+        f"add_alias_form_{selected_profile['id']}"
+    ):
+        new_alias_email = st.text_input(
+            "Add alternate email"
+        )
+
+        add_alias_submitted = st.form_submit_button(
+            "Add alternate email"
+        )
+
+        if add_alias_submitted:
+            result = add_client_alias(
+                selected_profile["id"],
+                new_alias_email
+            )
+
+            if result["status"] == "added":
+                st.success(result["message"])
+                st.rerun()
+
+            elif result["status"] == "exists":
+                st.warning(result["message"])
+
+            else:
+                st.error(result["message"])
+
+    
     client_history = get_messages_for_client(
         selected_profile["id"]
     )
@@ -335,7 +433,7 @@ st.divider()
 
 st.subheader("Inbox Filters")
 
-filter_col1, filter_col2 = st.columns(2)
+filter_col1, filter_col2, filter_col3 = st.columns(3)
 
 with filter_col1:
     status_filter = st.selectbox(
@@ -349,6 +447,13 @@ with filter_col2:
         ["ALL", "CRITICAL", "HIGH", "MEDIUM", "LOW"]
     )
 
+with filter_col3:
+    source_filter = st.selectbox(
+        "Source",
+        ["ALL", "GMAIL", "MANUAL"]
+    )
+
+
 filtered_messages = messages
 
 if status_filter != "ALL":
@@ -361,6 +466,12 @@ if urgency_filter != "ALL":
     filtered_messages = [
         msg for msg in filtered_messages
         if msg["urgency"] == urgency_filter
+    ]
+
+if source_filter != "ALL":
+    filtered_messages = [
+        msg for msg in filtered_messages
+        if msg["source"] == source_filter
     ]
 
 st.divider()
@@ -382,8 +493,14 @@ else:
 
         client = msg["client_name"] or "Unknown Client"
 
+        if msg["source"] == "GMAIL":
+            source_label = "📧 Gmail"
+
+        else:
+            source_label = "✍️ Manual"
+
         with st.expander(
-            f'{icon} {client} — {msg["category"]} — {msg["urgency"]}'
+            f"{icon} {client} — {msg['category']} — {msg['urgency']} — {source_label}"
         ):
             st.write("**Client message**")
             st.write(msg["message"])
@@ -402,6 +519,35 @@ else:
             st.caption(
                 f'Received: {msg["created_at"].strftime("%d %b %Y %H:%M")}'
             )
+
+            if not msg["client_name"]:
+
+                st.write("**Assign client**")
+
+                assign_client_name = st.selectbox(
+                    "Select client",
+                    ["Select client..."] + list(client_options.keys()),
+                    key=f"assign_client_{msg['id']}"
+                )
+
+                if assign_client_name != "Select client...":
+
+                    if st.button(
+                        "Assign message",
+                        key=f"assign_button_{msg['id']}"
+                    ):
+                        selected_client = client_options[assign_client_name]
+
+                        update_message_client(
+                            msg["id"],
+                            selected_client["id"]
+                        )
+
+                        st.success(
+                            f"Message assigned to {selected_client['name']}."
+                        )
+
+                        st.rerun()
 
             st.write(f"**Status:** {msg['status']}")
 
