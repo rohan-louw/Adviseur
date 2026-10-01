@@ -1,0 +1,26 @@
+.venv/
+.env
+.streamlit/secrets.toml
+__pycache__/
+*.pyc
+.DS_Store
+credentials.json
+token.json
+
+# Secrets
+.env
+credentials.json
+token.json
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# macOS
+.DS_Store
+
+# Streamlit local secrets
+.streamlit/secrets.toml
+DEPLOYMENT.md
+DEPLOYMENT.md
