@@ -162,11 +162,16 @@ def get_label_id(service, label_name):
 
 def sync_adviseur_emails(service, limit=50):
     """
-    Scan recent inbox messages that do not already have the ADVISEUR label.
+    Sync recent Gmail messages into Adviseur.
 
-    Only emails from recognised Adviseur clients are processed.
-    After successful processing, Adviseur applies the ADVISEUR Gmail label
-    automatically.
+    Known clients:
+        - processed automatically
+
+    Unknown senders:
+        - processed only when Gmail considers the message PRIMARY
+        - saved as Unknown Client for adviser review
+
+    After successful handling, Adviseur applies the ADVISEUR label.
     """
 
     label_id = get_label_id(service, "ADVISEUR")
@@ -218,14 +223,22 @@ def sync_adviseur_emails(service, limit=50):
         if not sender_email:
             continue
 
-        # Only allow recognised clients into Adviseur.
         client = get_client_by_email(sender_email)
 
-        if not client:
+        gmail_labels = message.get("labelIds", [])
+
+        # Known client:
+        # process regardless of Gmail category.
+        #
+        # Unknown sender:
+        # only process if Gmail considers it a PRIMARY inbox message.
+        if not client and "CATEGORY_PRIMARY" not in gmail_labels:
             continue
 
         subject = header_data.get("subject", "")
-        body = extract_plain_text(message["payload"]).strip()
+        body = extract_plain_text(
+            message["payload"]
+        ).strip()
 
         try:
             result = process_email(
@@ -235,7 +248,7 @@ def sync_adviseur_emails(service, limit=50):
                 external_message_id=gmail_id,
             )
 
-            # Only label the email after Adviseur has successfully handled it.
+            # Mark successfully handled Gmail messages.
             service.users().messages().modify(
                 userId="me",
                 id=gmail_id,
@@ -249,6 +262,11 @@ def sync_adviseur_emails(service, limit=50):
                     "gmail_id": gmail_id,
                     "sender": sender_email,
                     "subject": subject,
+                    "client": (
+                        client["name"]
+                        if client
+                        else "Unknown Client"
+                    ),
                     "status": result["status"],
                 }
             )
@@ -259,7 +277,12 @@ def sync_adviseur_emails(service, limit=50):
                     "gmail_id": gmail_id,
                     "sender": sender_email,
                     "subject": subject,
-                    "status": "error",
+                    "client": (
+                        client["name"]
+                        if client
+                        else "Unknown Client"
+                    ),
+                    "status": "ERROR",
                     "error": str(exc),
                 }
             )
