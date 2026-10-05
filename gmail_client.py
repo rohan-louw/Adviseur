@@ -10,9 +10,10 @@ from googleapiclient.discovery import build
 
 from config import get_secret
 from email_service import process_email
+from database import get_client_by_email
 
 
-SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"]
+SCOPES = ["https://www.googleapis.com/auth/gmail.modify"]
 BASE_DIR = Path(__file__).resolve().parent
 CREDENTIALS_FILE = BASE_DIR / "credentials.json"
 TOKEN_FILE = BASE_DIR / "token.json"
@@ -159,15 +160,29 @@ def get_label_id(service, label_name):
     return None
 
 
-def sync_adviseur_emails(service, limit=20):
+def sync_adviseur_emails(service, limit=50):
+    """
+    Scan recent inbox messages that do not already have the ADVISEUR label.
+
+    Only emails from recognised Adviseur clients are processed.
+    After successful processing, Adviseur applies the ADVISEUR Gmail label
+    automatically.
+    """
+
     label_id = get_label_id(service, "ADVISEUR")
+
     if not label_id:
         raise ValueError("Gmail label 'ADVISEUR' was not found.")
 
     response = (
         service.users()
         .messages()
-        .list(userId="me", labelIds=[label_id], maxResults=limit)
+        .list(
+            userId="me",
+            labelIds=["INBOX"],
+            q="-label:ADVISEUR",
+            maxResults=limit,
+        )
         .execute()
     )
 
@@ -175,32 +190,78 @@ def sync_adviseur_emails(service, limit=20):
 
     for item in response.get("messages", []):
         gmail_id = item["id"]
+
         message = (
             service.users()
             .messages()
-            .get(userId="me", id=gmail_id, format="full")
+            .get(
+                userId="me",
+                id=gmail_id,
+                format="full",
+            )
             .execute()
         )
+
         headers = message["payload"].get("headers", [])
-        header_data = {header["name"].lower(): header["value"] for header in headers}
-        _, sender_email = parseaddr(header_data.get("from", ""))
+
+        header_data = {
+            header["name"].lower(): header["value"]
+            for header in headers
+        }
+
+        _, sender_email = parseaddr(
+            header_data.get("from", "")
+        )
+
+        sender_email = sender_email.strip().lower()
+
+        if not sender_email:
+            continue
+
+        # Only allow recognised clients into Adviseur.
+        client = get_client_by_email(sender_email)
+
+        if not client:
+            continue
+
         subject = header_data.get("subject", "")
         body = extract_plain_text(message["payload"]).strip()
 
-        result = process_email(
-            sender=sender_email.lower(),
-            subject=subject,
-            body=body,
-            external_message_id=gmail_id,
-        )
+        try:
+            result = process_email(
+                sender=sender_email,
+                subject=subject,
+                body=body,
+                external_message_id=gmail_id,
+            )
 
-        results.append(
-            {
-                "gmail_id": gmail_id,
-                "sender": sender_email.lower(),
-                "subject": subject,
-                "status": result["status"],
-            }
-        )
+            # Only label the email after Adviseur has successfully handled it.
+            service.users().messages().modify(
+                userId="me",
+                id=gmail_id,
+                body={
+                    "addLabelIds": [label_id]
+                },
+            ).execute()
+
+            results.append(
+                {
+                    "gmail_id": gmail_id,
+                    "sender": sender_email,
+                    "subject": subject,
+                    "status": result["status"],
+                }
+            )
+
+        except Exception as exc:
+            results.append(
+                {
+                    "gmail_id": gmail_id,
+                    "sender": sender_email,
+                    "subject": subject,
+                    "status": "error",
+                    "error": str(exc),
+                }
+            )
 
     return results
